@@ -2,7 +2,8 @@
 #
 # Start it by pushing a tag (`git tag v0.2.0 && git push origin v0.2.0`) or
 # from the Actions tab ("Run workflow", enter the version). The version must
-# match Cargo.toml, and CHANGELOG.md must have a section for it.
+# match Cargo.toml, and CHANGELOG.md must have a section for it. After the
+# release is published, aur-publish.yml updates the AUR packages.
 name: Release
 
 on:
@@ -112,3 +113,12 @@ jobs:
             dist/snip-arch-linux-x86_64.tar.gz
             dist/SHA256SUMS
           fail_on_unmatched_files: true
+
+  aur:
+    name: Update AUR packages
+    needs: [build-arch, release]
+    uses: ./.github/workflows/aur-publish.yml
+    with:
+      version: ${{ needs.build-arch.outputs.version }}
+    secrets:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}

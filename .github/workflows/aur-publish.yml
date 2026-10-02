@@ -1,0 +1,134 @@
+# Updates the AUR packages (snip-notes, snip-notes-bin) to a released version:
+# bumps pkgver, refreshes checksums from the published files, regenerates
+# .SRCINFO, builds and lints both on Arch, pushes them to the AUR, and commits
+# the updated PKGBUILDs back to the default branch.
+#
+# Runs after a release (called from release.yml) or by hand from the Actions
+# tab. Pushing needs the AUR_SSH_PRIVATE_KEY secret: the private half of an
+# SSH key added to your AUR account. Without it, or with dry_run, everything
+# up to the push still runs, so the packages are checked but not published.
+name: Publish AUR packages
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+    secrets:
+      AUR_SSH_PRIVATE_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version to package, e.g. 0.2.0"
+        required: true
+      dry_run:
+        description: "Build and check only; don't push to the AUR or commit"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  aur:
+    name: Update AUR packages
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    env:
+      VERSION: ${{ inputs.version }}
+      PACKAGES: snip-notes-bin snip-notes
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Install tools
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git namcap pacman-contrib openssh sudo
+          # makepkg refuses to run as root
+          useradd --create-home builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Update PKGBUILDs to ${{ inputs.version }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          chown -R builder:builder packaging/aur
+          for pkg in $PACKAGES; do
+            echo "::group::$pkg"
+            cd "$GITHUB_WORKSPACE/packaging/aur/$pkg"
+            sed -i -e "s/^pkgver=.*/pkgver=$VERSION/" -e "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+            sudo -u builder updpkgsums
+            sudo -u builder makepkg --printsrcinfo > .SRCINFO
+            echo "::endgroup::"
+          done
+          cd "$GITHUB_WORKSPACE"
+          git diff -- packaging/aur
+
+      - name: Build and lint
+        run: |
+          for pkg in $PACKAGES; do
+            echo "::group::$pkg"
+            cd "$GITHUB_WORKSPACE/packaging/aur/$pkg"
+            namcap PKGBUILD
+            sudo -u builder makepkg --syncdeps --noconfirm --cleanbuild
+            built=$(sudo -u builder makepkg --packagelist | grep -v -- '-debug-')
+            namcap "$built"
+            # the two packages conflict, so run the built binary instead of installing it
+            "pkg/$pkg/usr/bin/snip" --db "/tmp/$pkg.db" add "aur check" >/dev/null
+            "pkg/$pkg/usr/bin/snip" --db "/tmp/$pkg.db" search check | grep -q "aur check"
+            echo "::endgroup::"
+          done
+
+      - name: Push to the AUR
+        id: push
+        if: ${{ !inputs.dry_run }}
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          AUR_GIT_NAME: ${{ vars.AUR_GIT_NAME || github.repository_owner }}
+          AUR_GIT_EMAIL: ${{ vars.AUR_GIT_EMAIL || format('{0}+{1}@users.noreply.github.com', github.repository_owner_id, github.repository_owner) }}
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "::warning::AUR_SSH_PRIVATE_KEY is not set: packages were checked but not pushed to the AUR"
+            exit 0
+          fi
+          install -dm700 "$HOME/.ssh"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
+          ssh-keyscan -t ed25519 aur.archlinux.org > "$HOME/.ssh/known_hosts" 2>/dev/null
+          echo "AUR host key (compare with the fingerprints on aur.archlinux.org):"
+          ssh-keygen -lf "$HOME/.ssh/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes"
+
+          for pkg in $PACKAGES; do
+            echo "::group::$pkg"
+            dir="/tmp/aur-$pkg"
+            rm -rf "$dir"
+            git clone "ssh://aur@aur.archlinux.org/$pkg.git" "$dir"
+            cp "packaging/aur/$pkg/PKGBUILD" "packaging/aur/$pkg/.SRCINFO" "$dir/"
+            git -C "$dir" add PKGBUILD .SRCINFO
+            if git -C "$dir" diff --cached --quiet; then
+              echo "$pkg is already at $VERSION on the AUR"
+            else
+              git -C "$dir" -c user.name="$AUR_GIT_NAME" -c user.email="$AUR_GIT_EMAIL" \
+                commit -m "Update to $VERSION"
+              git -C "$dir" push origin HEAD:master
+            fi
+            echo "::endgroup::"
+          done
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit updated PKGBUILDs
+        if: ${{ steps.push.outputs.pushed == 'true' }}
+        run: |
+          git add packaging/aur/*/PKGBUILD packaging/aur/*/.SRCINFO
+          if git diff --cached --quiet; then
+            echo "packaging/aur is already at $VERSION"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "AUR: update packages to $VERSION"
+          git push origin "HEAD:$DEFAULT_BRANCH"

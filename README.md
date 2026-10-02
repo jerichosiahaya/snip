@@ -15,7 +15,10 @@ yay -S snip-notes       # or build from source
 ```
 
 Either installs the `snip` command (use `paru` or `makepkg` if you prefer).
-The PKGBUILDs live in [`packaging/aur/`](packaging/aur/).
+The PKGBUILDs live in [`packaging/aur/`](packaging/aur/). Each release
+updates them and pushes them to the AUR automatically (see
+`.github/workflows/aur-publish.yml`; it needs the `AUR_SSH_PRIVATE_KEY`
+repository secret).
 
 ## Install with Cargo (any platform)
 
