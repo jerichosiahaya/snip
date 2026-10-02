@@ -1,0 +1,27 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.jerichosiahaya/snip",
+  "title": "snip",
+  "description": "Personal terminal notes: search, read, create, append to and update notes in local SQLite.",
+  "repository": {
+    "url": "https://github.com/jerichosiahaya/snip",
+    "source": "github"
+  },
+  "version": "0.2.0",
+  "packages": [
+    {
+      "registryType": "cargo",
+      "identifier": "snip-notes",
+      "version": "0.2.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}

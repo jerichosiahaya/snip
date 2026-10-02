@@ -1,6 +1,19 @@
 # snip
 
-Lightweight terminal note-taking app. Rust + SQLite (FTS5 full-text search).
+Lightweight terminal note-taking app. Rust + SQLite (FTS5 full-text search),
+with an [MCP server](#use-snip-from-claude-mcp) so Claude can read and write your notes.
+
+- crates.io: [`snip-notes`](https://crates.io/crates/snip-notes)
+- mcp-name: io.github.jerichosiahaya/snip
+- License: MIT
+
+## Install with Cargo (any platform)
+
+Requires Rust/Cargo and a C compiler for the bundled SQLite:
+
+```bash
+cargo install snip-notes   # installs the `snip` command into ~/.cargo/bin
+```
 
 ## Install on Arch Linux (x86-64)
 
@@ -85,12 +98,13 @@ uses the same database as the interactive app, and both can be open at once.
 **Claude Code:**
 
 ```bash
-claude mcp add --scope user snip -- "$HOME/.local/bin/snip" mcp
+claude mcp add --scope user snip -- "$(command -v snip)" mcp
 ```
 
 **Claude Desktop:** add this to `claude_desktop_config.json` (Settings →
-Developer → Edit Config), using the absolute path to `snip`, then restart
-Claude Desktop:
+Developer → Edit Config), using the absolute path to `snip` (`command -v snip`
+prints it: `~/.cargo/bin/snip` after `cargo install`, `~/.local/bin/snip` for
+the prebuilt download), then restart Claude Desktop:
 
 ```json
 {
