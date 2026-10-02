@@ -20,8 +20,8 @@ cargo install snip-notes   # installs the `snip` command into ~/.cargo/bin
 Download the prebuilt executable—**no Rust or Cargo required**:
 
 ```bash
-curl -fLO https://github.com/jerichosiahaya/snip/releases/download/v0.1.0/snip-arch-linux-x86_64.tar.gz
-curl -fLO https://github.com/jerichosiahaya/snip/releases/download/v0.1.0/SHA256SUMS
+curl -fLO https://github.com/jerichosiahaya/snip/releases/download/v0.2.0/snip-arch-linux-x86_64.tar.gz
+curl -fLO https://github.com/jerichosiahaya/snip/releases/download/v0.2.0/SHA256SUMS
 sha256sum -c SHA256SUMS && \
   tar -xzf snip-arch-linux-x86_64.tar.gz && \
   install -Dm755 snip "$HOME/.local/bin/snip"
