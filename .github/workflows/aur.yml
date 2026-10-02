@@ -1,0 +1,71 @@
+# Checks the AUR packages in packaging/aur/ on Arch Linux: .SRCINFO is in
+# sync with the PKGBUILD, the package builds with makepkg and passes namcap,
+# and the installed `snip` works.
+name: AUR packages
+
+on:
+  push:
+    paths: ["packaging/aur/**", ".github/workflows/aur.yml"]
+  pull_request:
+    paths: ["packaging/aur/**", ".github/workflows/aur.yml"]
+  workflow_dispatch:
+
+jobs:
+  package:
+    name: ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [snip-notes, snip-notes-bin]
+    defaults:
+      run:
+        working-directory: packaging/aur/${{ matrix.package }}
+    steps:
+      - name: Install tools
+        working-directory: /
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git namcap sudo
+          # makepkg refuses to run as root
+          useradd --create-home builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+
+      - uses: actions/checkout@v4
+
+      - name: Check .SRCINFO is up to date
+        run: |
+          chown -R builder:builder .
+          sudo -u builder makepkg --printsrcinfo > /tmp/SRCINFO
+          diff -u .SRCINFO /tmp/SRCINFO
+
+      - name: Lint PKGBUILD
+        run: namcap PKGBUILD
+
+      - name: Build
+        run: sudo -u builder makepkg --syncdeps --noconfirm --cleanbuild
+
+      - name: Lint package
+        run: |
+          pkg=$(sudo -u builder makepkg --packagelist | grep -v -- '-debug-')
+          echo "PKG=$pkg" >> "$GITHUB_ENV"
+          namcap "$pkg"
+          pacman -Qlp "$pkg"
+
+      - name: Install and smoke test
+        run: |
+          pacman -U --noconfirm "$PKG"
+          snip --db /tmp/t.db add "aur smoke test" --tag ci
+          snip --db /tmp/t.db search smoke | grep -q "aur smoke test"
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+            | snip --db /tmp/t.db mcp | grep -q '"serverInfo"'
+          pacman -Qi ${{ matrix.package }}
+
+  aur-names:
+    name: AUR name check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Look up existing AUR packages
+        run: |
+          curl -fsS 'https://aur.archlinux.org/rpc/v5/info?arg[]=snip-notes&arg[]=snip-notes-bin&arg[]=snip' \
+            | jq -r '"\(.resultcount) existing:", (.results[] | "  \(.Name) by \(.Maintainer // "orphan"): \(.URL)")'

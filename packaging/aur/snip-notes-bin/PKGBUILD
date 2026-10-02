@@ -1,0 +1,23 @@
+# Maintainer: jerichosiahaya <jericho dot siahaya at gmail dot com>
+
+pkgname=snip-notes-bin
+_name=snip
+pkgver=0.2.0
+pkgrel=1
+pkgdesc='Lightweight terminal note-taking app with full-text search and an MCP server for Claude (prebuilt)'
+arch=('x86_64')
+url='https://github.com/jerichosiahaya/snip'
+license=('MIT')
+depends=('gcc-libs' 'glibc')
+optdepends=('nano: editor used when $EDITOR is unset')
+provides=("snip-notes=$pkgver")
+conflicts=('snip-notes')
+source=("$_name-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/snip-arch-linux-x86_64.tar.gz"
+        "LICENSE-$pkgver::https://raw.githubusercontent.com/jerichosiahaya/snip/v$pkgver/LICENSE")
+sha256sums=('30da67b6adb8f0b08a2a2ac775d2c8bb5fd3647c13c91c6b6541314c80ba9537'
+            '06bf9346682285ab11b98658e849e8feb9dcf3d295776a5d8a8f19b6891adf56')
+
+package() {
+  install -Dm755 snip "$pkgdir/usr/bin/snip"
+  install -Dm644 "LICENSE-$pkgver" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

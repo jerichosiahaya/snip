@@ -1,0 +1,18 @@
+pkgbase = snip-notes-bin
+	pkgdesc = Lightweight terminal note-taking app with full-text search and an MCP server for Claude (prebuilt)
+	pkgver = 0.2.0
+	pkgrel = 1
+	url = https://github.com/jerichosiahaya/snip
+	arch = x86_64
+	license = MIT
+	depends = gcc-libs
+	depends = glibc
+	optdepends = nano: editor used when $EDITOR is unset
+	provides = snip-notes=0.2.0
+	conflicts = snip-notes
+	source = snip-0.2.0-x86_64.tar.gz::https://github.com/jerichosiahaya/snip/releases/download/v0.2.0/snip-arch-linux-x86_64.tar.gz
+	source = LICENSE-0.2.0::https://raw.githubusercontent.com/jerichosiahaya/snip/v0.2.0/LICENSE
+	sha256sums = 30da67b6adb8f0b08a2a2ac775d2c8bb5fd3647c13c91c6b6541314c80ba9537
+	sha256sums = 06bf9346682285ab11b98658e849e8feb9dcf3d295776a5d8a8f19b6891adf56
+
+pkgname = snip-notes-bin

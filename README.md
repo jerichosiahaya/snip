@@ -7,6 +7,16 @@ with an [MCP server](#use-snip-from-claude-mcp) so Claude can read and write you
 - mcp-name: io.github.jerichosiahaya/snip
 - License: MIT
 
+## Install from the AUR (Arch Linux)
+
+```bash
+yay -S snip-notes-bin   # prebuilt binary from the GitHub release
+yay -S snip-notes       # or build from source
+```
+
+Either installs the `snip` command (use `paru` or `makepkg` if you prefer).
+The PKGBUILDs live in [`packaging/aur/`](packaging/aur/).
+
 ## Install with Cargo (any platform)
 
 Requires Rust/Cargo and a C compiler for the bundled SQLite:
