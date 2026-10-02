@@ -50,13 +50,14 @@ Notes are stored in `$XDG_DATA_HOME/snip.db` (normally `~/.local/share/snip.db`)
 ↑↓         move through results
 Enter      edit selected note (opens $EDITOR, falls back to nano)
 Ctrl-N     new note
-Ctrl-T     cycle tag filter
-/          search (title + body)
+Ctrl-T     cycle tag filter (… → back to all)
+/          search (title + body; every word must match, prefixes ok: "meet" finds "meeting")
 Delete     delete selected note (asks y/N)
 Ctrl-Q     quit
 ```
 
-Note format: first line = title, the rest = body. Works in your normal editor.
+Note format: first line = title, the rest = body. Works in your normal editor;
+`$EDITOR` may include arguments, e.g. `EDITOR="code -w"`.
 
 ## Data & backups
 

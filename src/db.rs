@@ -128,11 +128,15 @@ pub fn distinct_tags(conn: &Connection) -> Vec<String> {
     set.into_iter().collect()
 }
 
-/// Escape a user query into a safe FTS5 quoted string treating input literally.
+/// Turn user input into a safe FTS5 query: every whitespace-separated word becomes
+/// a quoted prefix term (`"meet"*`), all of which must match. Quoting makes FTS5
+/// syntax in the input (`AND`, `*`, `(`, `"`) literal.
 fn fts_blob(input: &str) -> String {
-    // quote each token as a phrase-preserving blob; keep it simple: wrap whole query
-    // ponytail: naive, treats quotes as literal; fine for MVP
-    format!("\"{}\"", input.replace('"', "\"\""))
+    input
+        .split_whitespace()
+        .map(|w| format!("\"{}\"*", w.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {

@@ -12,6 +12,7 @@ struct App {
     conn: rusqlite::Connection,
     notes: Vec<Note>,
     selected: usize,
+    offset: usize, // index of the first note shown on screen
     query: String, // current search terms
     tag: String,   // active tag filter
     tags: Vec<String>, // all distinct tags for Tab cycling
@@ -67,10 +68,11 @@ fn main() -> rusqlite::Result<()> {
         conn,
         notes: Vec::new(),
         selected: 0,
+        offset: 0,
         query: String::new(),
         tag: String::new(),
         tags: Vec::new(),
-        status: String::from("↑↓ nav · Enter edit · C-n new · C-t tag · / search · q quit"),
+        status: String::from("↑↓ nav · Enter edit · C-n new · C-t tag · / search · C-q quit"),
     };
     app.tags = db::distinct_tags(&app.conn);
     app.refresh_list();
@@ -105,10 +107,13 @@ fn quick_add(conn: &rusqlite::Connection, args: &[String]) -> rusqlite::Result<(
 }
 
 fn split_title_body(trimmed: &str) -> (String, String) {
-    // first line = title, rest = body
+    // first line = title, rest = body; blank lines between them are only a separator
     let mut lines = trimmed.lines();
     let title = lines.next().unwrap_or("").to_string();
-    let body = lines.collect::<Vec<_>>().join("\n");
+    let body = lines
+        .skip_while(|l| l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
     (title, body)
 }
 
@@ -159,10 +164,14 @@ fn run_ui(app: &mut App) -> rusqlite::Result<()> {
                         let current = db::get(&app.conn, id).ok().flatten();
                         if let Some(note) = current {
                             let seed = format!("{}\n\n{}", note.title, note.body);
-                            match editor::edit(&seed, "snip-edit.md") {
-                                Ok((txt, _changed)) => {
+                            match edit_in_terminal(&seed, "snip-edit") {
+                                Ok((txt, _)) => {
+                                    // compare parsed content, not raw text: editors often
+                                    // add a trailing newline to an untouched file
                                     let (title, body) = split_title_body(txt.trim());
-                                    if !title.is_empty() {
+                                    if title == note.title && body == note.body {
+                                        app.status = String::from("no changes");
+                                    } else if !title.is_empty() {
                                         db::update(&app.conn, id, &title, &body, &note.tags).ok();
                                         app.status = format!("updated: {} (tags: {})", title, note.tags);
                                     } else {
@@ -220,7 +229,7 @@ fn run_ui(app: &mut App) -> rusqlite::Result<()> {
 
 fn new_note(app: &mut App) {
     let seed = "";
-    match editor::edit(seed, "snip-new.md") {
+    match edit_in_terminal(seed, "snip-new") {
         Ok((txt, changed)) if changed && !txt.trim().is_empty() => {
             let (title, body) = split_title_body(txt.trim());
             let id = db::create(&app.conn, &title, &body, "").ok();
@@ -232,6 +241,17 @@ fn new_note(app: &mut App) {
     }
     app.refresh_list();
     app.tags = db::distinct_tags(&app.conn);
+}
+
+/// Hand the terminal to the editor: leave raw mode and the alternate screen while it runs.
+fn edit_in_terminal(seed: &str, prefix: &str) -> std::io::Result<(String, bool)> {
+    let mut out = stdout();
+    terminal::disable_raw_mode().ok();
+    execute!(out, terminal::LeaveAlternateScreen, cursor::Show).ok();
+    let result = editor::edit(seed, prefix);
+    execute!(out, terminal::EnterAlternateScreen, cursor::Hide, terminal::Clear(ClearType::All)).ok();
+    terminal::enable_raw_mode().ok();
+    result
 }
 
 /// minimal inline search/input prompt: reads chars into `buf` until Enter/Esc
@@ -254,19 +274,29 @@ fn input_loop(app: &mut App, prefix: &str) {
             _ => break,
         }
     }
+    app.selected = 0;
     app.refresh_list();
 }
 
 fn cycle_tag(app: &mut App) {
-    if app.tags.is_empty() {
+    if app.tags.is_empty() && app.tag.is_empty() {
         app.status = String::from("no tags yet");
         return;
     }
-    app.tag = match app.tags.iter().position(|t| t == &app.tag) {
-        Some(i) => app.tags[(i + 1) % app.tags.len()].clone(),
-        None => app.tags[0].clone(),
-    };
+    app.tag = next_tag(&app.tags, &app.tag);
+    app.selected = 0;
     app.refresh_list();
+}
+
+/// Cycle all → tag1 → … → tagN → all. A tag that no longer exists resets to all.
+fn next_tag(tags: &[String], current: &str) -> String {
+    if current.is_empty() {
+        return tags.first().cloned().unwrap_or_default();
+    }
+    match tags.iter().position(|t| t == current) {
+        Some(i) => tags.get(i + 1).cloned().unwrap_or_default(),
+        None => String::new(),
+    }
 }
 
 fn confirm_delete(conn: &rusqlite::Connection, id: i64) -> bool {
@@ -302,7 +332,43 @@ fn write_frame(out: &mut impl Write, frame: &str) -> std::io::Result<()> {
     out.flush()
 }
 
-fn draw(app: &App, out: &mut std::io::Stdout) {
+/// Terminal (columns, rows), with a sane fallback when it can't be queried.
+fn screen_size() -> (usize, usize) {
+    terminal::size().map_or((80, 24), |(w, h)| (w as usize, h as usize))
+}
+
+/// Shorten `s` to at most `width` columns (one per char), marking cuts with `…`.
+/// Control chars (tabs etc.) become spaces so they can't break the layout.
+fn fit(s: &str, width: usize) -> String {
+    let clean = s.chars().map(|c| if c.is_control() { ' ' } else { c });
+    if s.chars().count() <= width {
+        return clean.collect();
+    }
+    let mut out: String = clean.take(width.saturating_sub(1)).collect();
+    if width > 0 {
+        out.push('…');
+    }
+    out
+}
+
+/// Scroll so `selected` stays inside a window of `rows` lines starting at `offset`.
+fn scroll_offset(selected: usize, offset: usize, rows: usize) -> usize {
+    let rows = rows.max(1);
+    if selected < offset {
+        selected
+    } else if selected >= offset + rows {
+        selected + 1 - rows
+    } else {
+        offset
+    }
+}
+
+fn draw(app: &mut App, out: &mut std::io::Stdout) {
+    let (width, height) = screen_size();
+    // header + list + blank/help + blank/status, and write_frame's final newline
+    // must not scroll the screen: list rows = height - 6
+    let rows = height.saturating_sub(6).max(1);
+    app.offset = scroll_offset(app.selected, app.offset, rows);
 
     let mut frame = String::new();
 
@@ -310,12 +376,12 @@ fn draw(app: &App, out: &mut std::io::Stdout) {
     frame.push_str(&format!(
         "{}{}\n",
         "SNIP".black().on_magenta(),
-        format!(" search: `{}`  tag=({})", app.query,
-            if app.tag.is_empty() { "all" } else { &app.tag }),
+        fit(&format!(" search: `{}`  tag=({})", app.query,
+            if app.tag.is_empty() { "all" } else { &app.tag }), width.saturating_sub(4)),
     ));
 
     // results: list + selected line shows preview
-    for (i, note) in app.notes.iter().enumerate() {
+    for (i, note) in app.notes.iter().enumerate().skip(app.offset).take(rows) {
         let selected = i == app.selected;
         let mut text = note.title.clone();
         if selected && !note.body.is_empty() {
@@ -330,6 +396,7 @@ fn draw(app: &App, out: &mut std::io::Stdout) {
         if !note.tags.is_empty() {
             render.push_str(&format!("  [{}]", short_tags(&note.tags)));
         }
+        let render = fit(&render, width);
         if selected {
             frame.push_str(&format!("{}\n", render.bold().yellow()));
         } else {
@@ -339,27 +406,43 @@ fn draw(app: &App, out: &mut std::io::Stdout) {
 
     // help + status lines
     frame.push_str(&format!(
-        "\n{} notes · ↑↓ move · Enter edit · C-n new · C-t tag · C-q quit\n",
-        app.notes.len()
+        "\n{}\n",
+        fit(&format!("{} notes · ↑↓ move · Enter edit · C-n new · C-t tag · C-q quit",
+            app.notes.len()), width)
     ));
-    frame.push_str(&format!("\n{}", app.status));
+    frame.push_str(&format!("\n{}", fit(&app.status, width)));
 
     let _ = write_frame(out, &frame);
 }
 
+/// Like [`fit`], but keeps the end of `s` and marks the cut at the start.
+fn fit_tail(s: &str, width: usize) -> String {
+    let n = s.chars().count();
+    if n <= width {
+        return fit(s, width);
+    }
+    let tail: String = s.chars().skip(n + 1 - width.max(1)).collect();
+    fit(&format!("…{tail}"), width)
+}
+
 fn draw_prompt(app: &App, prefix: &str, query: &str) {
     let mut out = stdout();
+    let (width, height) = screen_size();
+    // header + hint + blank + results, each ending in a newline, then write_frame
+    // adds one more: the cursor must stay on screen, so results = height - 5
+    let rows = height.saturating_sub(5).max(1);
 
     let mut frame = String::new();
     frame.push_str(&format!(
         "{}{}\n",
         "SNIP".black().on_magenta(),
-        format!(" {prefix}{query}_"),
+        // keep the end of a long query (where the cursor is) visible
+        fit_tail(&format!(" {prefix}{query}_"), width.saturating_sub(4)),
     ));
-    frame.push_str("(type to search · Enter apply · Esc cancel)\n\n");
-    if let Ok(notes) = db::list(&app.conn, &app.query, &app.tag, 20) {
+    frame.push_str(&format!("{}\n\n", fit("(type to search · Enter apply · Esc cancel)", width)));
+    if let Ok(notes) = db::list(&app.conn, &app.query, &app.tag, rows) {
         for n in notes {
-            frame.push_str(&format!("{}\n", n.title));
+            frame.push_str(&format!("{}\n", fit(&n.title, width)));
         }
     }
     let _ = write_frame(&mut out, &frame);
@@ -372,4 +455,50 @@ fn raw_mode_lines_return_to_left_edge() {
     let output = String::from_utf8(output).unwrap();
     assert!(output.starts_with("\x1b[1;1H\x1b[2J"));
     assert!(output.ends_with("SNIP search: ``  tag=(all)\r\n> test\r\n\r\n1 notes\r\nhelp\r\n"));
+}
+
+#[test]
+fn editing_round_trip_keeps_body_stable() {
+    let (mut title, mut body) = (String::from("Title"), String::from("line one\n\n  indented"));
+    for _ in 0..3 {
+        let seed = format!("{title}\n\n{body}");
+        (title, body) = split_title_body(seed.trim());
+    }
+    assert_eq!(title, "Title");
+    assert_eq!(body, "line one\n\n  indented");
+    // a trailing newline added by the editor parses to the same note
+    assert_eq!(split_title_body("Title\n\nline one\n".trim()), ("Title".into(), "line one".into()));
+}
+
+#[test]
+fn tag_cycle_returns_to_all() {
+    let tags = vec!["home".to_string(), "work".to_string()];
+    assert_eq!(next_tag(&tags, ""), "home");
+    assert_eq!(next_tag(&tags, "home"), "work");
+    assert_eq!(next_tag(&tags, "work"), "");
+    assert_eq!(next_tag(&tags, "deleted"), "");
+    assert_eq!(next_tag(&[], "deleted"), "");
+    assert_eq!(next_tag(&[], ""), "");
+}
+
+#[test]
+fn scroll_keeps_selection_visible() {
+    assert_eq!(scroll_offset(0, 0, 5), 0);
+    assert_eq!(scroll_offset(4, 0, 5), 0);
+    assert_eq!(scroll_offset(5, 0, 5), 1); // moved past the bottom
+    assert_eq!(scroll_offset(7, 3, 5), 3); // still inside the window
+    assert_eq!(scroll_offset(2, 3, 5), 2); // moved above the top
+    assert_eq!(scroll_offset(3, 0, 0), 3); // tiny terminal: one row
+}
+
+#[test]
+fn fit_truncates_to_width() {
+    assert_eq!(fit("hello", 10), "hello");
+    assert_eq!(fit("hello", 5), "hello");
+    assert_eq!(fit("hello world", 6), "hello…");
+    assert_eq!(fit("a\tb", 10), "a b");
+    assert_eq!(fit("héllo wörld", 4), "hél…");
+    assert_eq!(fit("abc", 0), "");
+    assert_eq!(fit_tail(" /long query_", 6), "…uery_");
+    assert_eq!(fit_tail("abc", 6), "abc");
 }
