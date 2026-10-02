@@ -1,12 +1,27 @@
 [package]
-name = "snip"
-version = "0.1.0"
+name = "snip-notes"
+version = "0.2.0"
 edition = "2024"
+description = "Lightweight terminal note-taking app (SQLite + full-text search) with an MCP server so Claude can read and write your notes"
+license = "MIT"
+repository = "https://github.com/jerichosiahaya/snip"
+readme = "README.md"
+keywords = ["notes", "tui", "mcp", "sqlite", "cli"]
+categories = ["command-line-utilities"]
+
+[lib]
+name = "snip" # keeps `use snip::…` working under the crates.io name
+
+[[bin]]
+name = "snip" # the installed command stays `snip`
+path = "src/main.rs"
 
 [dependencies]
 crossterm = "0.29"
 rusqlite = { version = "0.32", features = ["bundled"] }
 dirs = "5"
+unicode-width = "0.2"
+serde_json = "1"
 
 [profile.release]
 opt-level = "s"

@@ -15,6 +15,8 @@ pub struct Note {
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
+    // the interactive app and `snip mcp` may write at the same time: wait, don't fail
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS notes (
             id      INTEGER PRIMARY KEY,
@@ -98,7 +100,7 @@ pub fn list(conn: &Connection, query: &str, tag: &str, limit: usize) -> rusqlite
         sql.push_str(&format!("AND ( ' ' || n.tags || ' ' ) LIKE ?{} ", idx));
         args.push(Box::new(format!("% {tag} %")));
     }
-    sql.push_str("ORDER BY n.updated DESC LIMIT ?");
+    sql.push_str("ORDER BY n.updated DESC, n.id DESC LIMIT ?");
     args.push(Box::new(limit as i64));
 
     let mut stmt = conn.prepare(&sql)?;

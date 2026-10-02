@@ -1,8 +1,11 @@
+use snip::ui::{self, Mode};
 use snip::{db, editor};
 
 use crossterm::{
-    cursor, event::{self, Event, KeyCode, KeyModifiers},
-    execute, style::Stylize,
+    cursor,
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    execute, queue,
+    style::PrintStyledContent,
     terminal::{self, ClearType},
 };
 use db::Note;
@@ -15,8 +18,9 @@ struct App {
     offset: usize, // index of the first note shown on screen
     query: String, // current search terms
     tag: String,   // active tag filter
-    tags: Vec<String>, // all distinct tags for Tab cycling
-    status: String,
+    tags: Vec<String>, // all distinct tags for Ctrl-T cycling
+    mode: Mode,
+    status: String, // one-off message, shown in the footer until the next key
 }
 
 fn main() -> rusqlite::Result<()> {
@@ -52,6 +56,14 @@ fn main() -> rusqlite::Result<()> {
 
     match cmd.as_str() {
         "add" => return quick_add(&conn, &cmd_args),
+        "mcp" => {
+            let stdin = std::io::stdin();
+            if let Err(e) = snip::mcp::serve(&conn, stdin.lock(), std::io::stdout().lock()) {
+                eprintln!("snip mcp: {e}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
         "search" => {
             let q = cmd_args.first().cloned().unwrap_or_default();
             let tag = find_tag_flag(&cmd_args);
@@ -72,7 +84,8 @@ fn main() -> rusqlite::Result<()> {
         query: String::new(),
         tag: String::new(),
         tags: Vec::new(),
-        status: String::from("↑↓ nav · Enter edit · C-n new · C-t tag · / search · C-q quit"),
+        mode: Mode::Browse,
+        status: String::new(),
     };
     app.tags = db::distinct_tags(&app.conn);
     app.refresh_list();
@@ -134,91 +147,71 @@ fn short_tags(tags: &str) -> String {
     tags.split_whitespace().collect::<Vec<_>>().join(",")
 }
 
+
 impl App {
     fn refresh_list(&mut self) {
-        if let Ok(notes) = db::list(&self.conn, &self.query, &self.tag, 100) {
+        if let Ok(notes) = db::list(&self.conn, &self.query, &self.tag, 5000) {
             self.notes = notes;
             if self.selected >= self.notes.len() {
                 self.selected = self.notes.len().saturating_sub(1);
             }
         }
     }
+
+    /// Re-run the query and the tag list after a write, keeping `id` selected
+    /// when it is still in the list.
+    fn reload(&mut self, id: Option<i64>) {
+        self.refresh_list();
+        self.tags = db::distinct_tags(&self.conn);
+        if let Some(pos) = id.and_then(|id| self.notes.iter().position(|n| n.id == id)) {
+            self.selected = pos;
+        }
+    }
+
+    fn set_query(&mut self, query: String) {
+        self.query = query;
+        self.selected = 0;
+        self.refresh_list();
+    }
+
+    fn view(&self) -> ui::View<'_> {
+        ui::View {
+            notes: &self.notes,
+            selected: self.selected,
+            offset: self.offset,
+            query: &self.query,
+            tag: &self.tag,
+            mode: self.mode,
+            status: &self.status,
+            now: unix_now(),
+        }
+    }
+}
+
+enum Flow {
+    Continue,
+    Quit,
 }
 
 fn run_ui(app: &mut App) -> rusqlite::Result<()> {
     terminal::enable_raw_mode().ok();
     let mut out = stdout();
-    execute!(out, terminal::EnterAlternateScreen, cursor::Hide).ok();
-    // purge any residual content from a prior run before drawing
-    execute!(out, terminal::Clear(ClearType::All)).ok();
+    execute!(out, terminal::EnterAlternateScreen, cursor::Hide, terminal::Clear(ClearType::All)).ok();
 
     loop {
         draw(app, &mut out);
-        match event::read() {
-            Ok(Event::Key(key)) => match key.code {
-                KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
-                KeyCode::Enter => {
-                    if !app.notes.is_empty() {
-                        let id = app.notes[app.selected].id;
-                        let current = db::get(&app.conn, id).ok().flatten();
-                        if let Some(note) = current {
-                            let seed = format!("{}\n\n{}", note.title, note.body);
-                            match edit_in_terminal(&seed, "snip-edit") {
-                                Ok((txt, _)) => {
-                                    // compare parsed content, not raw text: editors often
-                                    // add a trailing newline to an untouched file
-                                    let (title, body) = split_title_body(txt.trim());
-                                    if title == note.title && body == note.body {
-                                        app.status = String::from("no changes");
-                                    } else if !title.is_empty() {
-                                        db::update(&app.conn, id, &title, &body, &note.tags).ok();
-                                        app.status = format!("updated: {} (tags: {})", title, note.tags);
-                                    } else {
-                                        app.status = String::from("note unchanged (title empty, skipped)");
-                                    }
-                                }
-                                Err(e) => app.status = format!("edit failed: {e}"),
-                            }
-                        }
-                        app.refresh_list();
-                        app.tags = db::distinct_tags(&app.conn);
-                    }
-                }
-                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    new_note(app);
-                }
-                KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => cycle_tag(app),
-                KeyCode::Char('/') => {
-                    app.query.clear();
-                    input_loop(app, "/");
-                }
-                KeyCode::Up => {
-                    if app.selected > 0 {
-                        app.selected -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    if app.selected + 1 < app.notes.len() {
-                        app.selected += 1;
-                    }
-                }
-                KeyCode::Delete if !app.notes.is_empty() => {
-                    let id = app.notes[app.selected].id;
-                    if confirm_delete(&app.conn, id) {
-                        db::delete(&app.conn, id).ok();
-                        app.refresh_list();
-                        app.tags = db::distinct_tags(&app.conn);
-                        app.status = String::from("note deleted");
-                    }
-                }
-                _ => {}
-            },
-            Ok(Event::Resize(_, _)) => {}
-            Err(e) => {
-                app.status = format!("event error: {e}");
+        let key = match event::read() {
+            Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => k,
+            Ok(Event::Resize(_, _)) => {
+                execute!(out, terminal::Clear(ClearType::All)).ok();
+                continue;
             }
-            _ => {}
+            Ok(_) => continue,
+            Err(_) => break, // terminal gone: nothing left to read keys from
+        };
+        app.status.clear();
+        if let Flow::Quit = handle_key(app, key) {
+            break;
         }
     }
 
@@ -227,20 +220,125 @@ fn run_ui(app: &mut App) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn new_note(app: &mut App) {
-    let seed = "";
-    match edit_in_terminal(seed, "snip-new") {
-        Ok((txt, changed)) if changed && !txt.trim().is_empty() => {
+fn handle_key(app: &mut App, key: KeyEvent) -> Flow {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    if ctrl && matches!(key.code, KeyCode::Char('q') | KeyCode::Char('c')) {
+        return Flow::Quit;
+    }
+
+    match app.mode {
+        Mode::ConfirmDelete => {
+            app.mode = Mode::Browse;
+            if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+                delete_selected(app);
+            } else {
+                app.status = String::from("delete cancelled");
+            }
+            return Flow::Continue;
+        }
+        Mode::Search => match key.code {
+            KeyCode::Char(c) if !ctrl => {
+                let mut q = std::mem::take(&mut app.query);
+                q.push(c);
+                app.set_query(q);
+                return Flow::Continue;
+            }
+            KeyCode::Backspace => {
+                let mut q = std::mem::take(&mut app.query);
+                q.pop();
+                app.set_query(q);
+                return Flow::Continue;
+            }
+            KeyCode::Enter => {
+                app.mode = Mode::Browse;
+                return Flow::Continue;
+            }
+            KeyCode::Esc => {
+                app.mode = Mode::Browse;
+                app.set_query(String::new());
+                return Flow::Continue;
+            }
+            _ => {} // navigation and Ctrl keys work while searching
+        },
+        Mode::Browse => {}
+    }
+
+    let rows = ui::list_rows(screen_size().1);
+    let last = app.notes.len().saturating_sub(1);
+    match key.code {
+        KeyCode::Up => app.selected = app.selected.saturating_sub(1),
+        KeyCode::Down => app.selected = (app.selected + 1).min(last),
+        KeyCode::PageUp => app.selected = app.selected.saturating_sub(rows),
+        KeyCode::PageDown => app.selected = (app.selected + rows).min(last),
+        KeyCode::Home => app.selected = 0,
+        KeyCode::End => app.selected = last,
+        KeyCode::Enter => edit_selected(app),
+        KeyCode::Char('n') if ctrl => new_note(app),
+        KeyCode::Char('t') if ctrl => cycle_tag(app),
+        KeyCode::Char('/') => app.mode = Mode::Search,
+        KeyCode::Delete if !app.notes.is_empty() => app.mode = Mode::ConfirmDelete,
+        KeyCode::Esc if !app.query.is_empty() || !app.tag.is_empty() => {
+            app.tag.clear();
+            app.set_query(String::new());
+            app.status = String::from("filters cleared");
+        }
+        _ => {}
+    }
+    Flow::Continue
+}
+
+fn edit_selected(app: &mut App) {
+    let Some(id) = app.notes.get(app.selected).map(|n| n.id) else {
+        return;
+    };
+    let Some(note) = db::get(&app.conn, id).ok().flatten() else {
+        return;
+    };
+    let seed = format!("{}\n\n{}", note.title, note.body);
+    match edit_in_terminal(&seed, "snip-edit") {
+        Ok((txt, _)) => {
+            // compare parsed content, not raw text: editors often
+            // add a trailing newline to an untouched file
             let (title, body) = split_title_body(txt.trim());
-            let id = db::create(&app.conn, &title, &body, "").ok();
-            if id.is_some() {
-                app.status = format!("created: {}", title);
+            if title == note.title && body == note.body {
+                app.status = String::from("no changes");
+            } else if !title.is_empty() {
+                db::update(&app.conn, id, &title, &body, &note.tags).ok();
+                app.status = format!("saved “{title}”");
+            } else {
+                app.status = String::from("not saved: the first line (title) was empty");
             }
         }
-        _ => app.status = String::from("note not saved"),
+        Err(e) => app.status = format!("edit failed: {e}"),
     }
-    app.refresh_list();
-    app.tags = db::distinct_tags(&app.conn);
+    app.reload(Some(id));
+}
+
+fn new_note(app: &mut App) {
+    let mut created = None;
+    match edit_in_terminal("", "snip-new") {
+        Ok((txt, changed)) if changed && !txt.trim().is_empty() => {
+            let (title, body) = split_title_body(txt.trim());
+            created = db::create(&app.conn, &title, &body, "").ok();
+            if created.is_some() {
+                app.status = format!("created “{title}”");
+            }
+        }
+        Ok(_) => app.status = String::from("empty note discarded"),
+        Err(e) => app.status = format!("edit failed: {e}"),
+    }
+    app.reload(created);
+}
+
+fn delete_selected(app: &mut App) {
+    let Some(note) = app.notes.get(app.selected) else {
+        return;
+    };
+    let title = note.title.clone();
+    if db::delete(&app.conn, note.id).is_ok() {
+        app.status = format!("deleted “{title}”");
+    }
+    app.reload(None);
 }
 
 /// Hand the terminal to the editor: leave raw mode and the alternate screen while it runs.
@@ -254,33 +352,9 @@ fn edit_in_terminal(seed: &str, prefix: &str) -> std::io::Result<(String, bool)>
     result
 }
 
-/// minimal inline search/input prompt: reads chars into `buf` until Enter/Esc
-fn input_loop(app: &mut App, prefix: &str) {
-    loop {
-        draw_prompt(app, prefix, &app.query);
-        match event::read() {
-            Ok(Event::Key(key)) => match key.code {
-                KeyCode::Enter => break,
-                KeyCode::Esc => {
-                    app.query.clear();
-                    break;
-                }
-                KeyCode::Char(c) => app.query.push(c),
-                KeyCode::Backspace => {
-                    app.query.pop();
-                }
-                _ => {}
-            },
-            _ => break,
-        }
-    }
-    app.selected = 0;
-    app.refresh_list();
-}
-
 fn cycle_tag(app: &mut App) {
     if app.tags.is_empty() && app.tag.is_empty() {
-        app.status = String::from("no tags yet");
+        app.status = String::from("no tags yet: add some with snip add \"…\" --tag name");
         return;
     }
     app.tag = next_tag(&app.tags, &app.tag);
@@ -299,37 +373,11 @@ fn next_tag(tags: &[String], current: &str) -> String {
     }
 }
 
-fn confirm_delete(conn: &rusqlite::Connection, id: i64) -> bool {
-    // inline y/n confirm; "y" deletes, anything else aborts. Esc aborts.
-    let title = db::get(conn, id)
-        .ok()
-        .flatten()
-        .map(|n| n.title)
-        .unwrap_or_default();
-    let mut out = stdout();
-    let _ = write!(
-        out,
-        "\r\n{} Delete '{title}'? [yN] ",
-        " SNIP ".black().on_red()
-    );
-    let _ = out.flush();
-    loop {
-        match event::read() {
-            Ok(Event::Key(k)) => match k.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => return true,
-                KeyCode::Esc => return false,
-                _ => return false,
-            },
-            _ => return false,
-        }
-    }
-}
-
-// Raw mode disables newline translation: each LF needs a carriage return.
-fn write_frame(out: &mut impl Write, frame: &str) -> std::io::Result<()> {
-    execute!(out, cursor::MoveTo(0, 0), terminal::Clear(ClearType::All))?;
-    write!(out, "{}\r\n", frame.replace("\r\n", "\n").replace('\n', "\r\n"))?;
-    out.flush()
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Terminal (columns, rows), with a sane fallback when it can't be queried.
@@ -337,124 +385,46 @@ fn screen_size() -> (usize, usize) {
     terminal::size().map_or((80, 24), |(w, h)| (w as usize, h as usize))
 }
 
-/// Shorten `s` to at most `width` columns (one per char), marking cuts with `…`.
-/// Control chars (tabs etc.) become spaces so they can't break the layout.
-fn fit(s: &str, width: usize) -> String {
-    let clean = s.chars().map(|c| if c.is_control() { ' ' } else { c });
-    if s.chars().count() <= width {
-        return clean.collect();
-    }
-    let mut out: String = clean.take(width.saturating_sub(1)).collect();
-    if width > 0 {
-        out.push('…');
-    }
-    out
-}
-
-/// Scroll so `selected` stays inside a window of `rows` lines starting at `offset`.
-fn scroll_offset(selected: usize, offset: usize, rows: usize) -> usize {
-    let rows = rows.max(1);
-    if selected < offset {
-        selected
-    } else if selected >= offset + rows {
-        selected + 1 - rows
-    } else {
-        offset
-    }
-}
-
 fn draw(app: &mut App, out: &mut std::io::Stdout) {
     let (width, height) = screen_size();
-    // header + list + blank/help + blank/status, and write_frame's final newline
-    // must not scroll the screen: list rows = height - 6
-    let rows = height.saturating_sub(6).max(1);
-    app.offset = scroll_offset(app.selected, app.offset, rows);
-
-    let mut frame = String::new();
-
-    // header line: query + tag
-    frame.push_str(&format!(
-        "{}{}\n",
-        "SNIP".black().on_magenta(),
-        fit(&format!(" search: `{}`  tag=({})", app.query,
-            if app.tag.is_empty() { "all" } else { &app.tag }), width.saturating_sub(4)),
-    ));
-
-    // results: list + selected line shows preview
-    for (i, note) in app.notes.iter().enumerate().skip(app.offset).take(rows) {
-        let selected = i == app.selected;
-        let mut text = note.title.clone();
-        if selected && !note.body.is_empty() {
-            text.push_str("  —  ");
-            text.push_str(&note.body.replace('\n', " "));
-        }
-        if text.is_empty() {
-            text.push_str("(untitled)");
-        }
-        let mut render = String::from(if selected { "> " } else { "  " });
-        render.push_str(&text);
-        if !note.tags.is_empty() {
-            render.push_str(&format!("  [{}]", short_tags(&note.tags)));
-        }
-        let render = fit(&render, width);
-        if selected {
-            frame.push_str(&format!("{}\n", render.bold().yellow()));
-        } else {
-            frame.push_str(&format!("{render}\n"));
-        }
-    }
-
-    // help + status lines
-    frame.push_str(&format!(
-        "\n{}\n",
-        fit(&format!("{} notes · ↑↓ move · Enter edit · C-n new · C-t tag · C-q quit",
-            app.notes.len()), width)
-    ));
-    frame.push_str(&format!("\n{}", fit(&app.status, width)));
-
-    let _ = write_frame(out, &frame);
+    app.offset = ui::scroll_offset(app.selected, app.offset, ui::list_rows(height));
+    let lines = ui::render(&app.view(), width, height);
+    let _ = paint(out, &lines, width);
 }
 
-/// Like [`fit`], but keeps the end of `s` and marks the cut at the start.
-fn fit_tail(s: &str, width: usize) -> String {
-    let n = s.chars().count();
-    if n <= width {
-        return fit(s, width);
-    }
-    let tail: String = s.chars().skip(n + 1 - width.max(1)).collect();
-    fit(&format!("…{tail}"), width)
-}
-
-fn draw_prompt(app: &App, prefix: &str, query: &str) {
-    let mut out = stdout();
-    let (width, height) = screen_size();
-    // header + hint + blank + results, each ending in a newline, then write_frame
-    // adds one more: the cursor must stay on screen, so results = height - 5
-    let rows = height.saturating_sub(5).max(1);
-
-    let mut frame = String::new();
-    frame.push_str(&format!(
-        "{}{}\n",
-        "SNIP".black().on_magenta(),
-        // keep the end of a long query (where the cursor is) visible
-        fit_tail(&format!(" {prefix}{query}_"), width.saturating_sub(4)),
-    ));
-    frame.push_str(&format!("{}\n\n", fit("(type to search · Enter apply · Esc cancel)", width)));
-    if let Ok(notes) = db::list(&app.conn, &app.query, &app.tag, rows) {
-        for n in notes {
-            frame.push_str(&format!("{}\n", fit(&n.title, width)));
+/// Write each row in place instead of clearing the whole screen, so redraws
+/// don't flicker. Rows are positioned with cursor moves, never newlines,
+/// which raw mode would not return to the left edge.
+fn paint(out: &mut impl Write, lines: &[ui::Line], width: usize) -> std::io::Result<()> {
+    queue!(out, terminal::BeginSynchronizedUpdate)?;
+    for (row, line) in lines.iter().enumerate() {
+        queue!(out, cursor::MoveTo(0, row as u16))?;
+        for s in line {
+            queue!(out, PrintStyledContent(s.style.apply(&s.text)))?;
+        }
+        // a full-width row leaves the cursor past the edge, where a clear
+        // would erase the last cell
+        if ui::line_width(line) < width {
+            queue!(out, terminal::Clear(ClearType::UntilNewLine))?;
         }
     }
-    let _ = write_frame(&mut out, &frame);
+    queue!(out, terminal::EndSynchronizedUpdate)?;
+    out.flush()
 }
 
 #[test]
-fn raw_mode_lines_return_to_left_edge() {
-    let mut output = Vec::new();
-    write_frame(&mut output, "SNIP search: ``  tag=(all)\n> test\n\n1 notes\r\nhelp").unwrap();
-    let output = String::from_utf8(output).unwrap();
-    assert!(output.starts_with("\x1b[1;1H\x1b[2J"));
-    assert!(output.ends_with("SNIP search: ``  tag=(all)\r\n> test\r\n\r\n1 notes\r\nhelp\r\n"));
+fn paint_positions_rows_without_newlines() {
+    let lines = vec![
+        vec![ui::Span { text: "first".into(), style: ui::Style::Plain }],
+        vec![ui::Span { text: "second".into(), style: ui::Style::Dim }],
+    ];
+    let mut out = Vec::new();
+    paint(&mut out, &lines, 10).unwrap();
+    let out = String::from_utf8(out).unwrap();
+    assert!(!out.contains('\n'));
+    assert!(out.contains("\x1b[1;1Hfirst\x1b[K"));
+    assert!(out.contains("\x1b[2;1H"));
+    assert!(out.contains("second"));
 }
 
 #[test]
@@ -479,26 +449,4 @@ fn tag_cycle_returns_to_all() {
     assert_eq!(next_tag(&tags, "deleted"), "");
     assert_eq!(next_tag(&[], "deleted"), "");
     assert_eq!(next_tag(&[], ""), "");
-}
-
-#[test]
-fn scroll_keeps_selection_visible() {
-    assert_eq!(scroll_offset(0, 0, 5), 0);
-    assert_eq!(scroll_offset(4, 0, 5), 0);
-    assert_eq!(scroll_offset(5, 0, 5), 1); // moved past the bottom
-    assert_eq!(scroll_offset(7, 3, 5), 3); // still inside the window
-    assert_eq!(scroll_offset(2, 3, 5), 2); // moved above the top
-    assert_eq!(scroll_offset(3, 0, 0), 3); // tiny terminal: one row
-}
-
-#[test]
-fn fit_truncates_to_width() {
-    assert_eq!(fit("hello", 10), "hello");
-    assert_eq!(fit("hello", 5), "hello");
-    assert_eq!(fit("hello world", 6), "hello…");
-    assert_eq!(fit("a\tb", 10), "a b");
-    assert_eq!(fit("héllo wörld", 4), "hél…");
-    assert_eq!(fit("abc", 0), "");
-    assert_eq!(fit_tail(" /long query_", 6), "…uery_");
-    assert_eq!(fit_tail("abc", 6), "abc");
 }
