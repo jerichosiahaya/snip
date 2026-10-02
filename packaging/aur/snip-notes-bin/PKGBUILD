@@ -8,7 +8,7 @@ pkgdesc='Lightweight terminal note-taking app with full-text search and an MCP s
 arch=('x86_64')
 url='https://github.com/jerichosiahaya/snip'
 license=('MIT')
-depends=('gcc-libs' 'glibc')
+depends=('glibc' 'libgcc')
 optdepends=('nano: editor used when $EDITOR is unset')
 provides=("snip-notes=$pkgver")
 conflicts=('snip-notes')
