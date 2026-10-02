@@ -44,15 +44,32 @@ snip search "" --tag work
 
 Notes are stored in `$XDG_DATA_HOME/snip.db` (normally `~/.local/share/snip.db`) by default. Override with `snip --db /path/to.db ...`.
 
-## Interactive keys
+## Interactive screen
 
 ```
-↑↓         move through results
+ snip  / to search                                                 17 notes
+──────────────────────────────┬────────────────────────────────────────────
+ Meeting notes             2h │ Meeting notes
+ Groceries                 3d │ #work · edited 2h ago
+ Book list                 1w │
+                              │ Discuss the new feature with the team…
+──────────────────────────────┴────────────────────────────────────────────
+ ↑↓ move  ⏎ edit  ^N new  / search  ^Q quit  ^T tag  Del delete
+```
+
+The list shows the most recently edited notes first. Terminals 72 columns
+or wider also show a preview of the selected note; narrower ones show its
+tags in the list instead.
+
+```
+↑↓ PgUp PgDn Home End   move through notes
 Enter      edit selected note (opens $EDITOR, falls back to nano)
 Ctrl-N     new note
-Ctrl-T     cycle tag filter (… → back to all)
-/          search (title + body; every word must match, prefixes ok: "meet" finds "meeting")
-Delete     delete selected note (asks y/N)
+/          search as you type (title + body; every word must match,
+           prefixes ok: "meet" finds "meeting"); Enter keeps it, Esc clears it
+Ctrl-T     cycle tag filter (all → each tag → all)
+Esc        clear search and tag filter
+Delete     delete selected note (asks y/N in the footer)
 Ctrl-Q     quit
 ```
 

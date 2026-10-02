@@ -98,7 +98,7 @@ pub fn list(conn: &Connection, query: &str, tag: &str, limit: usize) -> rusqlite
         sql.push_str(&format!("AND ( ' ' || n.tags || ' ' ) LIKE ?{} ", idx));
         args.push(Box::new(format!("% {tag} %")));
     }
-    sql.push_str("ORDER BY n.updated DESC LIMIT ?");
+    sql.push_str("ORDER BY n.updated DESC, n.id DESC LIMIT ?");
     args.push(Box::new(limit as i64));
 
     let mut stmt = conn.prepare(&sql)?;
