@@ -56,6 +56,26 @@ fn main() -> rusqlite::Result<()> {
 
     match cmd.as_str() {
         "add" => return quick_add(&conn, &cmd_args),
+        "export" => {
+            let (dir, tag) = match export_args(&cmd_args) {
+                Ok(a) => a,
+                Err(msg) => {
+                    eprintln!("snip export: {msg}\nusage: snip export [DIR] [--tag NAME]   (DIR defaults to ./snip-export)");
+                    std::process::exit(2);
+                }
+            };
+            match snip::export::export(&conn, &dir, &tag) {
+                Ok(paths) => {
+                    let s = if paths.len() == 1 { "" } else { "s" };
+                    println!("snip: exported {} note{s} to {}", paths.len(), dir.display());
+                }
+                Err(e) => {
+                    eprintln!("snip export: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return Ok(());
+        }
         "mcp" => {
             let stdin = std::io::stdin();
             if let Err(e) = snip::mcp::serve(&conn, stdin.lock(), std::io::stdout().lock()) {
@@ -128,6 +148,22 @@ fn split_title_body(trimmed: &str) -> (String, String) {
         .collect::<Vec<_>>()
         .join("\n");
     (title, body)
+}
+
+/// `[DIR] [--tag NAME]` in any order.
+fn export_args(args: &[String]) -> Result<(std::path::PathBuf, String), String> {
+    let mut dir = None;
+    let mut tag = String::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--tag" => tag = it.next().ok_or("--tag needs a name")?.trim_start_matches('#').to_string(),
+            flag if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
+            _ if dir.is_some() => return Err(format!("unexpected argument {a}")),
+            _ => dir = Some(std::path::PathBuf::from(a)),
+        }
+    }
+    Ok((dir.unwrap_or_else(|| "snip-export".into()), tag))
 }
 
 fn find_tag_flag(args: &[String]) -> String {

@@ -56,8 +56,8 @@ install -Dm755 target/release/snip "$HOME/.local/bin/snip"
 
 Release executable: **~1.6 MB**, below the 5 MB budget (excluding system libraries and notes).
 
-Early release: Markdown export and trash/restore are not implemented; deletion
-is permanent after confirmation. Keep backups of important notes.
+Early release: trash/restore is not implemented; deletion is permanent after
+confirmation. Keep backups of important notes.
 
 ## Usage
 
@@ -66,6 +66,7 @@ snip                     # open the interactive TUI
 snip add "note text" --tag work    # quick capture, first line = title
 snip search "meeting"    # print matching notes
 snip search "" --tag work
+snip export ~/notes      # every note as a Markdown file (see below)
 ```
 
 Notes are stored in `$XDG_DATA_HOME/snip.db` (normally `~/.local/share/snip.db`) by default. Override with `snip --db /path/to.db ...`.
@@ -151,7 +152,27 @@ in the app. `update_note` can still replace a note's body, so keep backups
   ```bash
   sqlite3 "${XDG_DATA_HOME:-$HOME/.local/share}/snip.db" ".backup 'snip-backup.db'"
   ```
-- Markdown export is not yet implemented.
+- **Markdown export:** `snip export [DIR] [--tag NAME]` writes one `.md` file per
+  note (DIR defaults to `./snip-export`). Each file has YAML front matter that
+  Obsidian and other Markdown tools read, then the title as a heading and the
+  body:
+  ```markdown
+  ---
+  title: "Meeting notes"
+  tags: ["work", "q4"]
+  created: 2026-10-02T16:49:00Z
+  updated: 2026-10-02T17:12:00Z
+  snip_id: 12
+  ---
+
+  # Meeting notes
+
+  - ship the redesign
+  ```
+  Files are named after the title (`meeting-notes.md`; the note id is added if
+  two titles clash) and their modification time is the note's last edit.
+  Exporting again overwrites those files and leaves anything else in DIR alone,
+  so a note that was renamed or deleted keeps its old file until you remove it.
 
 ## Tests
 

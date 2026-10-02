@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### New
+
+- `snip export [DIR] [--tag NAME]` writes every note as a Markdown file with
+  YAML front matter (title, tags, created, updated), readable by Obsidian and
+  other Markdown tools. Files are named after the note's title and carry its
+  last-edit time.
+
 ## [0.2.0] - 2026-10-02
 
 ### New

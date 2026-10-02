@@ -147,8 +147,8 @@ fn bad_arguments_are_tool_errors_the_model_can_read() {
 
 #[test]
 fn iso_time_formats_utc() {
-    assert_eq!(mcp::iso_time(0), "1970-01-01T00:00:00Z");
-    assert_eq!(mcp::iso_time(951_782_400), "2000-02-29T00:00:00Z");
-    assert_eq!(mcp::iso_time(1_790_959_740), "2026-10-02T16:49:00Z");
-    assert_eq!(mcp::iso_time(-1), "1969-12-31T23:59:59Z");
+    assert_eq!(db::iso_time(0), "1970-01-01T00:00:00Z");
+    assert_eq!(db::iso_time(951_782_400), "2000-02-29T00:00:00Z");
+    assert_eq!(db::iso_time(1_790_959_740), "2026-10-02T16:49:00Z");
+    assert_eq!(db::iso_time(-1), "1969-12-31T23:59:59Z");
 }
