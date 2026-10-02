@@ -67,25 +67,7 @@ jobs:
           tar -czf dist/snip-arch-linux-x86_64.tar.gz -C target/release snip
           (cd dist && sha256sum snip-arch-linux-x86_64.tar.gz > SHA256SUMS)
 
-          glibc=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n1)
-          size=$(stat -c %s "$bin")
-          archive=$(stat -c %s dist/snip-arch-linux-x86_64.tar.gz)
-          {
-            awk -v v="$VERSION" '/^## /{p = index($0, "[" v "]") > 0; next} p' CHANGELOG.md
-            echo "## Install (Arch Linux x86-64)"
-            echo
-            echo '```bash'
-            echo "curl -fLO https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/snip-arch-linux-x86_64.tar.gz"
-            echo "curl -fLO https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/SHA256SUMS"
-            echo 'sha256sum -c SHA256SUMS && tar -xzf snip-arch-linux-x86_64.tar.gz && install -Dm755 snip "$HOME/.local/bin/snip"'
-            echo '```'
-            echo
-            mb() { awk -v b="$1" 'BEGIN { printf "%.2f MB", b / 1048576 }'; }
-            echo "- Executable: $(mb "$size"); download archive: $(mb "$archive")."
-            echo "- Needs glibc $glibc or newer and gcc-libs. SQLite is bundled; no Rust needed."
-            echo "- Built on archlinux:latest from commit ${GITHUB_SHA}. Not an ARM build."
-            echo "- Or build from source on any platform: \`cargo install snip-notes\`."
-          } > dist/notes.md
+          .github/scripts/release-notes.sh "$VERSION" "$bin" dist/snip-arch-linux-x86_64.tar.gz "$GITHUB_SHA" > dist/notes.md
           cat dist/notes.md
 
       - uses: actions/upload-artifact@v4

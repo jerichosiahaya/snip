@@ -1,0 +1,35 @@
+# Regenerates an existing release's notes with .github/scripts/release-notes.sh,
+# from that release's own binary and the CHANGELOG.md on the default branch.
+# Run it from the Actions tab, e.g. after `cargo publish` so the notes start
+# offering `cargo install`, or after fixing a changelog entry.
+name: Update release notes
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release to update, e.g. 0.3.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Regenerate and update notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          version="${REQUESTED#v}"
+          tag="v$version"
+          gh release download "$tag" --dir dist --pattern 'snip-arch-linux-x86_64.tar.gz'
+          tar -xzf dist/snip-arch-linux-x86_64.tar.gz -C dist
+          commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)
+          .github/scripts/release-notes.sh "$version" dist/snip dist/snip-arch-linux-x86_64.tar.gz "$commit" > notes.md
+          cat notes.md
+          gh release edit "$tag" --notes-file notes.md
