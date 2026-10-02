@@ -28,7 +28,7 @@ cargo build --release --locked
 install -Dm755 target/release/snip "$HOME/.local/bin/snip"
 ```
 
-Release executable: **~1.5 MB**, below the 5 MB budget (excluding system libraries and notes).
+Release executable: **~1.6 MB**, below the 5 MB budget (excluding system libraries and notes).
 
 Early release: Markdown export and trash/restore are not implemented; deletion
 is permanent after confirmation. Keep backups of important notes.
@@ -75,6 +75,48 @@ Ctrl-Q     quit
 
 Note format: first line = title, the rest = body. Works in your normal editor;
 `$EDITOR` may include arguments, e.g. `EDITOR="code -w"`.
+
+## Use snip from Claude (MCP)
+
+`snip mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io)
+server on stdin/stdout, so Claude can save, find and update your notes. It
+uses the same database as the interactive app, and both can be open at once.
+
+**Claude Code:**
+
+```bash
+claude mcp add --scope user snip -- "$HOME/.local/bin/snip" mcp
+```
+
+**Claude Desktop:** add this to `claude_desktop_config.json` (Settings →
+Developer → Edit Config), using the absolute path to `snip`, then restart
+Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "snip": { "command": "/home/YOU/.local/bin/snip", "args": ["mcp"] }
+  }
+}
+```
+
+To use a different database, put `--db /path/to.db` before `mcp` in either
+command.
+
+Claude gets these tools:
+
+| Tool | Does |
+|---|---|
+| `search_notes` | find notes by words (prefixes ok) and/or tag; no query lists recent notes |
+| `get_note` | read one note in full |
+| `list_tags` | all tags in use |
+| `create_note` | save a new note (title, body, tags) |
+| `append_to_note` | add text to the end of a note |
+| `update_note` | change a note's title, body or tags |
+
+There is deliberately no delete tool: deleting notes stays something you do
+in the app. `update_note` can still replace a note's body, so keep backups
+(below) if Claude edits important notes.
 
 ## Data & backups
 

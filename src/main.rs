@@ -56,6 +56,14 @@ fn main() -> rusqlite::Result<()> {
 
     match cmd.as_str() {
         "add" => return quick_add(&conn, &cmd_args),
+        "mcp" => {
+            let stdin = std::io::stdin();
+            if let Err(e) = snip::mcp::serve(&conn, stdin.lock(), std::io::stdout().lock()) {
+                eprintln!("snip mcp: {e}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
         "search" => {
             let q = cmd_args.first().cloned().unwrap_or_default();
             let tag = find_tag_flag(&cmd_args);
