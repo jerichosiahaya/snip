@@ -1,6 +1,6 @@
 [package]
 name = "snip-notes"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Lightweight terminal note-taking app (SQLite + full-text search) with an MCP server so Claude can read and write your notes"
 license = "MIT"
